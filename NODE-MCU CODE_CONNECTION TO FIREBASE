@@ -1,0 +1,286 @@
+/*
+ * -THIS IS THE NODE-MCU SECTION. IT CONSISTS ON READING THE SERIAL PORT FROM THE ARDUINO, VALIDATE THE UID WITH THE DATA STORED IN 
+ *  FIREBASE, UPDATING THE NEW DATA AND GRANTING A RESPONSE TO THE USER.
+ *  
+ * -IN ORDER TO USE THE NODE-MCU YOU MUST DOWNLOAD THE CORRESPONDING LIBRARIES:
+ *  *STEP 1: GO TO  FILE->PREFERENCES  AND THEN ADD THIS https://arduino.esp8266.com/stable/package_esp8266com_index.json "LITERALLY COPY AND PASTE, IT IS NOT AN URL"
+ *  *STEP 2: GO TO  TOOLS->MANAGE LIBRARIES    THEN SEARCH FOR "ESP8266" AND INSTALL THE LATEST VERSION.
+ *  *STEP 3: RESTART THE ARDUINO IDE
+ *  
+ *  -IN ORDER TO ACCESS THE FIREBASE YOU MUST DOWNLOAD THE CORRESPONDING LIBRARIES:
+ *  *FOLLOW ALL THE STEPS IN THE GITHUB LINK:  https://github.com/mobizt/Firebase-ESP8266
+ *  *RESTART THE ARDUINO IDE
+ *  
+ * -PIN CONFIGURATION BETWEEN THE ARDUINO AND THE NODE-MCU ARE SPECIFIED IN THE ARDUINO PORTION OF CODE 
+ *  *ALL YOU HAVE TO DO IS TO CONNECT THE TX FROM ARDUINO TO RX OF NODE-MCU AND CREATE A COMMON GROUND 
+ * 
+ * -PIN CONFIGURATION FOR LEDS: YOU DON'T NEED A RESISTOR BETWEEN THEM BECAUSE THE VOLTAGE IS PRETTY LOW BUT YOU CAN USE SOMETHING ARROUND THE 100[OHMS] FOR PRECAUSION
+ *  *PIN D0 CORRESPONDS TO THE RED LIGHT, THIS ONE TELLS THE USER THAT HE HAS NO TICKETS LEFT
+ *  *PIN D1 CORRESPONDS TO THE YELLOW LIGHT, THIS ONE TELLS THE USER THERE HAS BEEN AN ERROR WITH THE CARD OR WITH THE COMMUNICATION
+ *  *PIN D2 CORRESPONDS TO THE GREEN LIGHT, THIS ONE TELLS THE USER THAT THE TICKET WAS ACCEPTED AND MAY NOW ENTER THE SYSTEM
+ *  *PIN D2 CORRESPONDS TO THE BLUE LIGHT, THIS ONE TELLS THE USER THAT THE SENSOR IS READY TO START READING
+ *  
+ *  -VALID USERS MAY HAVE EITHER A NUMBER GREATER OR EQUAL THAN 0 OR ONE OF THE FOLLOWING LETTERS:(D,M,W), OTHERWISE THE CARD IS NOT VALID OR IS NOT ON THE SYSTEM 
+ * - A FOLLOWING VERSION OF THE CODE WILL INTRODUCE A LCD
+ */
+
+// LIBRARIES FOR THE NODE-MCU ESP8266 AND FOR THE FIREBASE
+#include <ESP8266WiFi.h>
+#include <FirebaseESP8266.h>
+
+// VARIABLES FOR THE FIREBASE AND WIFI CONNECTION
+#define FIREBASE_HOST "transit-pay-default-rtdb.firebaseio.com"
+#define FIREBASE_AUTH "LtJuIXlOw9mTndNIycl49oMsWsQJfgthhaKb4bVr"
+#define WIFI_SSID "BELL282"
+#define WIFI_PASSWORD "7D93DC4A"
+
+// VARIABLES FOR THE LEDS MAPPING
+#define l_red  D0
+#define l_yellow D1
+#define l_green D2
+#define l_blue D3
+
+FirebaseData fbdo;    //Define FirebaseESP8266 data object
+
+//Wifi VARIABLES
+String path = "/Users/";
+uint16_t count = 0;
+void printResult(FirebaseData &data);
+
+//NFC VARIABLES
+char data; //Initialized variable to store recieved data
+String UID="";
+String fare;
+int mydata;
+String message;
+
+//BLUE LED VARIABLES
+char action;
+bool option=HIGH;
+
+
+
+void setup()
+{
+  //INITIALIZE THE LEDS WITH DIGITAL OUTPUTS
+  pinMode(l_red, OUTPUT);                                 
+  pinMode(l_yellow, OUTPUT); 
+  pinMode(l_green, OUTPUT);
+  pinMode(l_blue, OUTPUT);
+  
+  Serial.begin(9600);                                     //STARTS THE SERIAL COMMUNICATION
+
+  //STARTS THE Wifi CONNECTION
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);                  
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println();
+  Serial.print("Connected with IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.println();
+
+  //CONNECTS TO THE FIREBASE
+  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+  Firebase.reconnectWiFi(true);
+
+  //Set the size of WiFi rx/tx buffers in the case where we want to work with large data.
+  fbdo.setBSSLBufferSize(1024, 1024);
+
+  //Set the size of HTTP response buffers in the case where we want to work with large data.
+  fbdo.setResponseSize(1024);
+
+  if (!Firebase.beginStream(fbdo, path))
+  {
+    Serial.println("------------------------------------");
+    Serial.println("Can't begin stream connection...");
+    Serial.println("REASON: " + fbdo.errorReason());
+    Serial.println("------------------------------------");
+    Serial.println();
+  }
+}
+
+void loop()
+{
+  digitalWrite(l_blue, option);                             // BLUE LED 
+   
+  Serial.flush();                                           // CLEANS THE SERIAL BUFFER
+  
+  data = Serial.read(); //Read the serial data and store it
+  mydata=(int)data;
+  delay(100);
+  
+ 
+  if(mydata!=255)                                           //IF THERE IS SOMETHING IN THE BUFFER THEN START READING
+  {
+    option=LOW;
+    
+    if(data!='\n' || data!='\r')                            
+      UID+=data;                                           //STORES THE UID
+           
+    
+  }
+  else
+  {
+    if(UID!=NULL)                                             //IF AN UID EXISTS THEN ENTER
+    {
+      digitalWrite(l_blue, LOW);                              //TURN OFF THE BLUE LIGHT
+      
+      Serial.println("------------------------------------");
+      Serial.println("UID: " +UID);
+           
+      if (Firebase.getInt(fbdo, path+UID))                    //LOOK ON THE FIREBASE FOR THE UID IN CASE IT IS AN INTEGER
+      {
+        count=fbdo.intData();
+
+        if(count>0) // only a 0 value may result in no access
+        {
+            action='Y';
+            if(count>0)
+            {
+              count--;
+              message=String(count)+" Tickets remaining";
+            }
+        }
+        else
+        {
+          action='N';
+          message="No tickets Remaining";
+        }
+        
+        Serial.print(action);
+        clean_serial();
+        delay(100);
+        //print on the window all the specs.
+        Serial.println("");            
+        
+        if (Firebase.setInt(fbdo, path+UID, count))                     //IF THE TICKET IS VALID THEN SUBSTRACT ONE
+        {
+          Serial.println("PASSED");
+          Serial.println(message);
+          Serial.println();
+        }
+        else
+        {
+          Serial.println("FAILED");
+          Serial.println("REASON: " + fbdo.errorReason());
+          Serial.println();
+        }
+      }
+      else
+        if (Firebase.getString(fbdo, path+UID))                       //LOOK ON THE FIREBASE FOR THE UID IN CASE IT IS A STRING/CHARACTER 
+        {
+          fare=fbdo.stringData();
+      
+          if(fare=="M"||fare=="m") // only a 0 value may result in no access      //VERIFIES WHAT VALID CHARACTER IS STORED
+          {
+            message="Monthly";
+          }
+          else
+            if(fare=="W"||fare=="w") // only a 0 value may result in no access
+            {
+              message="Weekly";
+            }
+            else
+              if(fare=="D"||fare=="d") // only a 0 value may result in no access
+              {
+                message="One-day";
+              }
+              else
+              {
+                message="Invalid";
+              }
+      
+          if(message=="Invalid")
+          {
+            action='I';
+          }
+          else
+          {
+            action='Y';
+          }
+          Serial.print(action);
+          clean_serial();
+                         
+          //print on the window all the specs.
+          delay(100);
+          Serial.println("");
+          if (Firebase.setString(fbdo, path+UID, fare))                             // VALIDATES AND PRINT
+          {
+            Serial.println("PASSED");
+            Serial.println("Status: " +message +" Fare");
+            Serial.println();
+          }
+          else
+          {
+            Serial.println("FAILED");
+            Serial.println("REASON: " + fbdo.errorReason());
+            Serial.println();
+          }
+        }
+        else                                                        // IF NOTHING IS ON THE FIREBASE THEN SEND AN ERROR
+        {
+          
+          action='I';
+          Serial.print(action);
+          clean_serial();
+          delay(100);
+          Serial.println(" ");
+          Serial.println("FAILED");
+          Serial.println("REASON: " + fbdo.errorReason());
+        } 
+      
+      if (fbdo.streamTimeout())                                                   // CONNECTION GOT LOST
+      {
+        Serial.println("************************************");
+        Serial.println("Reconnecting...");
+        Serial.println("************************************");
+      }
+      
+      UID="";                                                               //RESTART UID
+      
+      if(action == 'Y')                                                     //PLAY WITH THE LEDS
+      {
+        digitalWrite(l_green, HIGH);
+      }
+      else
+        if(action == 'N')
+        {
+          digitalWrite(l_red, HIGH);
+        }
+        else
+          if(action == 'I')
+          {
+            digitalWrite(l_yellow, HIGH);
+          }
+  
+      delay(3000);                                              // WAIT FOR A FEW MILISECONDS
+      
+      option=HIGH;                                              // ALL LEDS OFF EXCEPT THE BLUE ONE
+      digitalWrite(l_red, LOW);                                
+      digitalWrite(l_yellow, LOW);
+      digitalWrite(l_green, LOW);
+      Serial.println("------------------------------------");
+    }
+  }  
+}
+
+void clean_serial()                                             //CLEANS THE BUFFER AND WAITS FOR ALL THE DATA TO BE SENT 
+{
+  String val;
+  if (Serial.available())
+      {
+        val="";
+        while(Serial.available())
+        {
+          char t= Serial.read();
+          val=val+t;
+        }
+       //Serial.println(val);
+       Serial.end();    // Ends the serial communication once all data is received
+       Serial.begin(9600);  // Re-establishes serial communication , this causes deletion of anything previously stored in the buffer                             //or cache
+      }
+}
