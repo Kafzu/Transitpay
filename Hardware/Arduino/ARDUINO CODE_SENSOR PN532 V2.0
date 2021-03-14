@@ -58,7 +58,7 @@ void loop(void)
 {
     Serial.flush();
     
-    if(digitalRead(LED)!=LOW)     // IF NODE-MCU AVAILABLE THEN READ FROM SENSOR
+    if(digitalRead(LED)==HIGH)     // IF NODE-MCU AVAILABLE THEN READ FROM SENSOR
     {
       if (nfc.tagPresent())       // CHECK IF THE SENSOR DETECTS SOMETHING
       {
@@ -77,7 +77,7 @@ void loop(void)
               NdefRecord record = message.getRecord(0);   // gets the first and expected only record
              
               byte payload[record.getPayloadLength()];    // Takes bit by bit of the string
-              record.getPayload(payload);                 //
+              record.getPayload(payload);                 // gets the record
       
               phone_number = "";                // Declares a new stri      
               
