@@ -1,0 +1,115 @@
+/*
+ * -THIS IS THE ARDUINO COMMUNICATION SECTION. IT CONSISTS ON READING THE NFC SENSOR AND SENDING THE UID TO THE NODE-MCU BOARD.
+ * -THIS VERSION SENDS BOTH THE PHONE NUMBER AND THE UID SEPARATED BY A SEMICOLON ';'.
+ * 
+ * -THE NFC READER USED IS THE PN532, TO CORRECTLY MAKE USE OF IT YOU MUST DOWNLOAD THE PN532 LIBRARY THAT IS ON GITHUB.  
+ *  https://github.com/elechouse/PN532
+ *  FOLLOW ALL THE STEPS THAT ARE PROVIDED. 
+ * 
+ * -VERY IMPORTANT::: I AM USING THE i2C MODE ON THE SENSOR. TO CHANGE THIS YOU MUST MANUALLY CHANGE THE SWITCH AS IT IS SHOWN IN THE TABLE OF THE SENSOR.
+ * 
+ * -PIN CONFIGURATION OF THE SENSOR:
+ * *GND TO GND OF THE ARDUINO
+ * *VCC TO 5V OF THE ARDUINO -> THE SENSOR CAN WORK WITH 3V AS-WELL
+ * *SDA AND SCL TO SDA AND SCL RESPECTIVELY OF THE ARDUINO -> THESE ARE THE LAST TWO SOCKETS RIGHT ABOVE "AREF"
+ * 
+ * -PIN CONFIGURATION OF THE ARDUINO:
+ * *PIN 2 TO THE D3 PIN OF THE NODE-MCU -> DO THIS AS A SEPARATE NODE, THERE IS ALSO LED CONNECTED FROM THIS PIN 
+ * *PIN 1 TO THE RX PIN OF THE NODE-MCU
+ * *YOU MAY WANT TO CREATE A COMMON GROUND BETWEEN THE ARDUINO AND THE NODE-MCU IN ORDER TO GET A CLOSED CIRCUIT 
+ */
+
+
+const int LED = 2;     // DIGITAL INPUT WHICH CHECKS WHETHER THE NODE-MCU IS AVAILABLE FOR READING.
+String phone_number = "";      // String Variable to store the phone number
+String id = "", UID="";                // String Variable to store the UID
+String NodeMCU = "";           // complete message to be sent to the NodeMCU
+// PN 532 CONFIGURATION
+#if 0
+#include <SPI.h>
+#include <PN532_SPI.h>
+#include <PN532.h>
+#include <NfcAdapter.h>
+
+
+
+PN532_SPI pn532spi(SPI, 10);
+NfcAdapter nfc = NfcAdapter(pn532spi);
+#else
+
+#include <Wire.h>
+#include <PN532_I2C.h>
+#include <PN532.h>
+#include <NfcAdapter.h>
+
+PN532_I2C pn532_i2c(Wire);
+NfcAdapter nfc = NfcAdapter(pn532_i2c);
+#endif
+
+
+void setup(void) {
+
+    pinMode(LED, INPUT);           // SETTING UP THE READING PIN 
+    Serial.begin(9600);            // STARTS THE SERIAL COMMUNICATION
+    nfc.begin();
+}
+
+void loop(void) 
+{
+    Serial.flush();
+    
+    if(digitalRead(LED)!=LOW)     // IF NODE-MCU AVAILABLE THEN READ FROM SENSOR
+    {
+      if (nfc.tagPresent())       // CHECK IF THE SENSOR DETECTS SOMETHING
+      {
+         
+          NfcTag tag = nfc.read();          // READS THE TAG
+          id = tag.getUidString();   // OBTAIN THE UID OF THE TAG
+          
+          if (tag.hasNdefMessage()) // every tag won't have a message
+          {
+            NdefMessage message = tag.getNdefMessage();   // Read the whole tag messages
+            
+            int recordCount = message.getRecordCount();   // gets how many records are stored... should be 1 always
+            
+            if(recordCount==1)                            // our tags can only have one record
+            {
+              NdefRecord record = message.getRecord(0);   // gets the first and expected only record
+             
+              byte payload[record.getPayloadLength()];    // Takes bit by bit of the string
+              record.getPayload(payload);                 //
+      
+              phone_number = "";                // Declares a new stri      
+              
+              for (int i = 0; i < record.getPayloadLength(); i++)  // Goes bit by bit reading the string 
+              {
+                if((char)payload[i]>='0'&&(char)payload[i]<='9')  // Only considers the numbers 
+                 phone_number += (char)payload[i];
+              }
+
+              for(int i=0;i<id.length();i++)  //removes the spaces in the UID
+                if(id[i]!=' ')
+                  UID+=id[i];
+              
+              NodeMCU=UID+";"+phone_number;
+              
+              Serial.println(NodeMCU);               // Prints the phone Number to the NodeMCU 
+
+              // Reset the variables 
+              id="";
+              UID="";
+              phone_number="";
+              NodeMCU="";
+              
+            }
+            else
+              Serial.println("ERROR");            // If the card has more than one record, in some cases not even a record at all
+          }
+      }
+      delay(1000);
+    }
+    
+    delay(100);
+}
+
+//Cristian Isaac Garcia Zambrano [KAFZU]
