@@ -1,0 +1,429 @@
+/*
+ * -THIS IS THE NODE-MCU SECTION. IT CONSISTS ON READING THE SERIAL PORT FROM THE ARDUINO, VALIDATE THE UID WITH THE DATA STORED IN 
+ *  FIREBASE, UPDATING THE NEW DATA AND GRANTING A RESPONSE TO THE USER.
+ *  
+ *  TAKES BOTH UID AND PHONE NUMBER, COMPARES, FOLLOWS SOME SECURITY VERIFICATIONS AND DECIDES THE RIGHT RESPONSE.
+ *
+ * -IN ORDER TO USE THE NODE-MCU YOU MUST DOWNLOAD THE CORRESPONDING LIBRARIES:
+ *  *STEP 1: GO TO  FILE->PREFERENCES  AND THEN ADD THIS https://arduino.esp8266.com/stable/package_esp8266com_index.json "LITERALLY COPY AND PASTE, IT IS NOT AN URL"
+ *  *STEP 2: GO TO  TOOLS->MANAGE LIBRARIES    THEN SEARCH FOR "ESP8266" AND INSTALL THE LATEST VERSION.
+ *  *STEP 3: RESTART THE ARDUINO IDE
+ *  
+ *  -IN ORDER TO ACCESS THE FIREBASE YOU MUST DOWNLOAD THE CORRESPONDING LIBRARIES:
+ *  *FOLLOW ALL THE STEPS IN THE GITHUB LINK:  https://github.com/mobizt/Firebase-ESP8266
+ *  *RESTART THE ARDUINO IDE
+ *  
+ * -PIN CONFIGURATION BETWEEN THE ARDUINO AND THE NODE-MCU ARE SPECIFIED IN THE ARDUINO PORTION OF CODE 
+ *  *ALL YOU HAVE TO DO IS TO CONNECT THE TX FROM ARDUINO TO RX OF NODE-MCU AND CREATE A COMMON GROUND 
+ * 
+ * -PIN CONFIGURATION FOR LEDS: YOU DON'T NEED A RESISTOR BETWEEN THEM BECAUSE THE VOLTAGE IS PRETTY LOW BUT YOU CAN USE SOMETHING ARROUND THE 100[OHMS] FOR PRECAUSION
+ *  *PIN D5 CORRESPONDS TO THE RED LIGHT, THIS ONE TELLS THE USER THAT HE HAS NO TICKETS LEFT
+ *  *PIN D6 CORRESPONDS TO THE YELLOW LIGHT, THIS ONE TELLS THE USER THERE HAS BEEN AN ERROR WITH THE CARD OR WITH THE COMMUNICATION
+ *  *PIN D7 CORRESPONDS TO THE GREEN LIGHT, THIS ONE TELLS THE USER THAT THE TICKET WAS ACCEPTED AND MAY NOW ENTER THE SYSTEM
+ *  *PIN D8 CORRESPONDS TO THE BLUE LIGHT, THIS ONE TELLS THE USER THAT THE SENSOR IS READY TO START READING
+ *  
+ *  -VALID USERS MAY HAVE EITHER A NUMBER GREATER OR EQUAL THAN 0 OR ONE OF THE FOLLOWING LETTERS:(D,M,W), OTHERWISE THE CARD IS NOT VALID OR IS NOT ON THE SYSTEM 
+ * 
+ * - THE CONNECTION TO THE LCD IS AS FOLLOWS (I2C 1602)
+ *  *PIN D1 TO SCL
+ *  *PIN D2 TO SDL
+ *  *GROUND TO GROUND FROM THE NODE MCU
+ *  *VCC TO VIN FROM THE NODE MCU
+ */
+
+// LIBRARIES FOR THE NODE-MCU ESP8266 AND FOR THE FIREBASE AND TIME
+#include <ESP8266WiFi.h>
+#include <FirebaseESP8266.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+
+//LIBRARIES FOR LCD
+
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// VARIABLES FOR THE FIREBASE AND WIFI CONNECTION
+#define FIREBASE_HOST "transitpay-54282-default-rtdb.firebaseio.com"       // transitpay-54282-default-rtdb.firebaseio.com ; superapp-39f88-default-rtdb.firebaseio.com ; transit-pay-default-rtdb.firebaseio.com  ->Mafer and Cristian Host refference
+#define FIREBASE_AUTH "CAti6Xo4xj5hdeIgejO0kNjWsHtpf4hAwIjpQkW8"         // CAti6Xo4xj5hdeIgejO0kNjWsHtpf4hAwIjpQkW8 ; o8CHHl9JNPhi6EryyK2aoPyZ9jMM1o0EXXOsS5YA ; LtJuIXlOw9mTndNIycl49oMsWsQJfgthhaKb4bVr   ->Jin, Mafer and Cristian Auth code (SECRET)
+#define WIFI_SSID "BELL282"                                              // Internet SSID
+#define WIFI_PASSWORD "7D93DC4A"                                         // Password of Wifi
+
+// VARIABLES FOR THE LEDS MAPPING
+#define l_red  D5
+#define l_yellow D6
+#define l_green D7
+#define l_blue D8
+
+//VARIABLES FOR SENDING DATE, TIME AND LOCATION
+String Location= "Metro Jean Talon";
+String MyName,MyDate,MyTime;
+
+FirebaseData fbdo;    //Define FirebaseESP8266 data object
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");   //TIME LIBRARIES
+
+//Wifi VARIABLES
+String path = "/user/";                                      // BE CAREFUL WITH THIS PATH
+uint16_t count = 0;
+void printResult(FirebaseData &data);
+
+//NFC VARIABLES
+char data; //Initialized variable to store recieved data
+String UID="";
+String Phone="";
+String message="";
+String check="";
+String fare;
+int mydata;
+bool semicolon=false;
+
+
+
+//BLUE LED VARIABLES
+char action;
+bool option=HIGH;
+
+
+
+void setup()
+{
+  //INITIALIZE THE LEDS WITH DIGITAL OUTPUTS
+  pinMode(l_red, OUTPUT);                                 
+  pinMode(l_yellow, OUTPUT); 
+  pinMode(l_green, OUTPUT);
+  pinMode(l_blue, OUTPUT);
+  
+  Serial.begin(9600);                                     //STARTS THE SERIAL COMMUNICATION
+  //Wire.begin(16,2);
+
+  lcd.begin(16,2);                                        // INITIALIZE THE LCD SCREEN
+  lcd.init();
+  lcd.backlight();
+
+  //STARTS THE Wifi CONNECTION
+  lcd.setCursor(0,0);
+  lcd.print("Connecting to");
+  lcd.setCursor(0,1);
+  lcd.print("Wifi");
+  
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);                  
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println();
+  Serial.print("Connected with IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.println();
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Please Tap");
+  lcd.setCursor(0,1);
+  lcd.print("Your card");
+
+  // Initialize a NTPClient to get time
+  timeClient.begin();
+  // Set offset time in seconds to adjust for your timezone, for example:
+  // GMT +1 = 3600
+  // GMT +8 = 28800
+  // GMT -1 = -3600
+  // GMT 0 = 0
+  timeClient.setTimeOffset(-14400);       //CANADA USES GMT -4
+
+  
+
+  //CONNECTS TO THE FIREBASE
+  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+  Firebase.reconnectWiFi(true);
+
+  //Set the size of WiFi rx/tx buffers in the case where we want to work with large data.
+  fbdo.setBSSLBufferSize(1024, 1024);
+
+  //Set the size of HTTP response buffers in the case where we want to work with large data.
+  fbdo.setResponseSize(1024);
+
+  if (!Firebase.beginStream(fbdo, path))
+  {
+    Serial.println("------------------------------------");
+    Serial.println("Can't begin stream connection...");
+    Serial.println("REASON: " + fbdo.errorReason());
+    Serial.println("------------------------------------");
+    Serial.println();
+  }
+}
+
+void loop()
+{
+  timeClient.update();
+  digitalWrite(l_blue, option);                             // BLUE LED 
+  if(option==HIGH)
+  {
+    lcd.setCursor(0,0);
+    lcd.print("Please Tap");
+    lcd.setCursor(0,1);
+    lcd.print("Your card");
+  }
+  else
+  {
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Reading");
+    lcd.setCursor(0,1);
+    lcd.print("Your card...");
+  }
+  
+  Serial.flush();                                           // CLEANS THE SERIAL BUFFER
+  
+  data = Serial.read(); //Read the serial data and store it
+  mydata=(int)data;
+  delay(100);
+  
+ 
+  if(mydata!=255)                                           //IF THERE IS SOMETHING IN THE BUFFER THEN START READING
+  {
+    option=LOW;
+        
+    if(data!='\n' && data!='\r')                            
+    {
+      if(data==';')
+        semicolon=true;
+      else
+        if(semicolon==false)                    //STORES THE UID
+          UID+=data;
+          else
+          if(semicolon==true)                   //STORES THE PHONE NUMBER
+            Phone+=data;                                       
+    }
+           
+    
+  }
+  else
+  {
+    if(UID!=NULL)                                             //IF AN UID EXISTS THEN ENTER
+    {
+      semicolon=false;
+      digitalWrite(l_blue, LOW);                              //TURN OFF THE BLUE LIGHT
+      
+      Serial.println("------------------------------------");
+      Serial.println("UID: " +UID);
+      Serial.println("Phone number: " +Phone);
+
+      if(Firebase.getString(fbdo, path+(String)Phone+"/NFC TAG"))                         // CHECKS IF THERE IS A VALID CARD ASSIGNED TO THE PHONE NUMBER
+      {
+        check=fbdo.stringData();
+
+        if(UID==check)
+        {   
+          if (Firebase.getString(fbdo, path+(String)Phone+"/"+"Fare"))                       //LOOK ON THE FIREBASE FOR THE FARE IN CASE IT IS A STRING/CHARACTER 
+          {
+            fare=fbdo.stringData();                                                          //VERIFIES WHAT VALID CHARACTER IS STORED
+        
+            if(fare=="M"||fare=="m") // only a 0 value may result in no access               //M STANDS FOR MONTHLY FARE
+            {
+              message="Monthly";
+            }
+            else
+              if(fare=="W"||fare=="w") // only a 0 value may result in no access              //W STANDS FOR WEEKLY FARE
+              {
+                message="Weekly Fare";
+              }
+              else
+                if(fare=="3Day"||fare=="3day") // only a 0 value may result in no access      //3Day STANDS FOR 3-DAYS FARE
+                {
+                  message="three-day Fare";
+                }
+                else
+                  if(fare.toInt()>0)                                                         // IF FARE IS A NUMBER THEN DECREASE AND UPDATE
+                  {
+                    int temp=fare.toInt();
+                    temp--;
+                    message=((String)temp)+" Tickets left";
+                    fare=(String)temp; 
+                  }
+                  else
+                    if(fare.toInt()==0)                                                       // IF FARE = 0 THEN NO ACCESS
+                    {
+                      message="No Tickets left";
+                    }
+                    else                                                                      // IF ANYTHING ELSE THEN INVLAID FARE
+                    {
+                      message="Invalid Fare";
+                    }
+        
+            if(message=="Invalid Fare")                                                     // DECISION MAKING PART
+            {
+              action='I';
+              Serial.println("Access Denied");
+            }
+            else
+              if(message=="No Tickets left")
+              {
+                action='N';
+                Serial.println("Access Denied"); 
+              }
+              else
+              {
+                action='Y';
+                Serial.println("Access Granted");
+              }
+              
+              
+            Serial.println(message);
+            clean_serial();
+                           
+            //print on the window all the specs.
+            if (Firebase.setString(fbdo, path+Phone+"/"+"Fare", fare))                             // VALIDATES AND PRINT
+            {
+              Serial.println("Status: " +message );
+            }
+            else
+            {
+              Serial.println("FAILED");
+              Serial.println("REASON: " + fbdo.errorReason());
+              Serial.println();
+            }
+            
+          }
+          else                                                        // IF NOTHING IS ON THE FIREBASE THEN SEND AN ERROR
+          {
+            
+            action='I';
+            Serial.println("Invalid Card");
+            clean_serial();
+            Serial.println("FAILED");
+            message="Invalid Card";
+          }
+        } 
+        else                                                                      // USER HAS A DIFFERENT CARD LINKED
+        {
+          action='S';
+          Serial.println("UID and User don't match");
+          clean_serial();
+          message="ID ERROR";
+        }
+        
+      }
+      else                                                                      // USER HAS A DIFFERENT CARD LINKED
+      {
+        action='S';
+        Serial.println("Wrong UID");
+        clean_serial();
+        message="Invalid Card";
+      }
+        
+      if (fbdo.streamTimeout())                                                   // CONNECTION GOT LOST
+      {
+        Serial.println("************************************");
+        Serial.println("Reconnecting...");
+        Serial.println("************************************");
+      }                                                    
+      
+      if(action == 'Y')                                                     //PLAY WITH THE LEDS
+      {
+        digitalWrite(l_green, HIGH);
+        lcd.clear();
+        lcd.setCursor(0,0);
+        lcd.print("Acess Granted");
+
+        MyName="";
+        MyDate="";
+        MyTime="";
+        GetDate();       
+        
+       
+        Serial.println("Location/Date/Time: " +Location+"  "+MyDate+" -> "+MyTime);
+        
+        Firebase.setString(fbdo, path+(String)Phone+"/Trips/"+MyName+"/Address",Location);
+        Firebase.setString(fbdo, path+(String)Phone+"/Trips/"+MyName+"/Date",MyDate);
+        Firebase.setString(fbdo, path+(String)Phone+"/Trips/"+MyName+"/Time",MyTime);
+       
+      }
+      else
+        if(action == 'N')
+        {
+          digitalWrite(l_red, HIGH);
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Acess Denied");
+        }
+        else
+        {
+          digitalWrite(l_yellow, HIGH);
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Access Denied");
+        }
+         
+      lcd.setCursor(0,1);
+      lcd.print(message);   
+  
+      delay(3000);                                              // WAIT FOR A FEW MILISECONDS
+      
+      //RESET VARIABLES 
+      UID="";
+      Phone="";       
+      lcd.clear();
+      option=HIGH;                                              // ALL LEDS OFF EXCEPT THE BLUE ONE
+      digitalWrite(l_red, LOW);                                
+      digitalWrite(l_yellow, LOW);
+      digitalWrite(l_green, LOW);
+      Serial.println("------------------------------------");
+    }
+  }  
+}
+
+void clean_serial()                                             //CLEANS THE BUFFER AND WAITS FOR ALL THE DATA TO BE SENT 
+{
+  String val;
+  if (Serial.available())
+      {
+        val="";
+        while(Serial.available())
+        {
+          char t= Serial.read();
+          val=val+t;
+        }
+       //Serial.println(val);
+       Serial.end();    // Ends the serial communication once all data is received
+       Serial.begin(9600);  // Re-establishes serial communication , this causes deletion of anything previously stored in the buffer                             //or cache
+      }
+}
+
+
+void GetDate()                                               //Obtain date and time
+{
+  unsigned long epochTime = timeClient.getEpochTime();          // Search for info on the web
+  struct tm *ptm = gmtime ((time_t *)&epochTime);
+  String Day,Month,Year,Minute,Hour,Seconds;
+  
+  
+  Day= getStringDate(ptm->tm_mday);
+  Month= getStringDate(ptm->tm_mon+1);
+  Year=getStringDate(ptm->tm_year-100);
+  Minute=getStringDate(timeClient.getMinutes());
+  Hour=getStringDate(timeClient.getHours());
+  Seconds=getStringDate(timeClient.getSeconds());
+
+  MyName=Month+Day+Year+Hour+Minute+Seconds;
+  MyDate=Month+"/"+Day+"/"+Year;
+  MyTime=Hour+":"+Minute+":"+Seconds;
+  
+}
+
+String getStringDate(int Value)               //return a two digit string when the number is less than 10
+{
+  String RealValue="";
+  
+  if(Value<10)
+    RealValue+='0';
+
+  RealValue+=(String)(Value);
+  return RealValue;
+}
+
+//CRISTIAN ISAAC GARCIA ZAMBRANO [KAFZU]
